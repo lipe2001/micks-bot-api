@@ -1,13 +1,20 @@
 const express = require("express");
-const { BotFrameworkAdapter } = require("botbuilder");
+const {
+  CloudAdapter,
+  ConfigurationBotFrameworkAuthentication
+} = require("botbuilder");
 
 const app = express();
 app.use(express.json());
 
-const adapter = new BotFrameworkAdapter({
-  appId: process.env.MicrosoftAppId || "",
-  appPassword: process.env.MicrosoftAppPassword || ""
+const botFrameworkAuthentication = new ConfigurationBotFrameworkAuthentication({
+  MicrosoftAppType: process.env.MicrosoftAppType || "SingleTenant",
+  MicrosoftAppId: process.env.MicrosoftAppId || "",
+  MicrosoftAppPassword: process.env.MicrosoftAppPassword || "",
+  MicrosoftAppTenantId: process.env.MicrosoftAppTenantId || ""
 });
+
+const adapter = new CloudAdapter(botFrameworkAuthentication);
 
 adapter.onTurnError = async (context, error) => {
   console.error("Erro no bot:", error);
@@ -21,7 +28,7 @@ app.get("/", (req, res) => {
 });
 
 app.post("/api/messages", async (req, res) => {
-  await adapter.processActivity(req, res, async (context) => {
+  await adapter.process(req, res, async (context) => {
     if (context.activity.type === "message") {
       const textoCliente = context.activity.text || "";
 
