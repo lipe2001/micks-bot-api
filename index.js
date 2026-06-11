@@ -10,6 +10,10 @@ const { AIProjectClient } = require("@azure/ai-projects");
 const app = express();
 app.use(express.json());
 
+/**
+ * Autenticação do Azure Bot Service
+ * Usada para o Azure Bot conversar com este middleware no Render.
+ */
 const botFrameworkAuthentication = new ConfigurationBotFrameworkAuthentication({
   MicrosoftAppType: process.env.MicrosoftAppType || "SingleTenant",
   MicrosoftAppId: process.env.MicrosoftAppId || "",
@@ -19,12 +23,23 @@ const botFrameworkAuthentication = new ConfigurationBotFrameworkAuthentication({
 
 const adapter = new CloudAdapter(botFrameworkAuthentication);
 
+/**
+ * Remove barra final do endpoint, se existir.
+ */
 function limparEndpoint(endpoint) {
   return (endpoint || "").replace(/\/$/, "");
 }
 
 let openaiClientPromise = null;
 
+/**
+ * Cria o client do projeto Foundry.
+ * Usa:
+ * - FOUNDRY_PROJECT_ENDPOINT
+ * - AZURE_TENANT_ID
+ * - AZURE_CLIENT_ID
+ * - AZURE_CLIENT_SECRET
+ */
 async function obterOpenAIClientDoProjeto() {
   if (openaiClientPromise) {
     return openaiClientPromise;
@@ -61,6 +76,12 @@ async function obterOpenAIClientDoProjeto() {
   return openaiClientPromise;
 }
 
+/**
+ * Chama o agente do Microsoft Foundry usando agent_reference.
+ * Usa:
+ * - FOUNDRY_AGENT_NAME
+ * - FOUNDRY_AGENT_VERSION
+ */
 async function chamarAgenteFoundry(mensagemCliente) {
   const agentName = process.env.FOUNDRY_AGENT_NAME || "bot-micks";
   const agentVersion = process.env.FOUNDRY_AGENT_VERSION || "2";
@@ -76,10 +97,16 @@ async function chamarAgenteFoundry(mensagemCliente) {
     agentReference.version = agentVersion;
   }
 
-  const response = await openai.responses.create({
-    input: mensagemCliente,
-    agent_reference: agentReference
-  });
+  const response = await openai.responses.create(
+    {
+      input: mensagemCliente
+    },
+    {
+      body: {
+        agent_reference: agentReference
+      }
+    }
+  );
 
   if (response.output_text) {
     return response.output_text;
@@ -112,6 +139,9 @@ async function chamarAgenteFoundry(mensagemCliente) {
   return "Não consegui gerar uma resposta agora. Vou direcionar para um atendente.";
 }
 
+/**
+ * Tratamento global de erro do Bot Framework.
+ */
 adapter.onTurnError = async (context, error) => {
   console.error("Erro no bot:", error);
 
@@ -124,10 +154,16 @@ adapter.onTurnError = async (context, error) => {
   }
 };
 
+/**
+ * Health check simples.
+ */
 app.get("/", (req, res) => {
   res.status(200).send("Micks Bot API online.");
 });
 
+/**
+ * Endpoint principal usado pelo Azure Bot Service.
+ */
 app.post("/api/messages", async (req, res) => {
   try {
     await adapter.process(req, res, async (context) => {
