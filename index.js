@@ -4,6 +4,9 @@ const {
   ConfigurationBotFrameworkAuthentication
 } = require("botbuilder");
 
+const { ClientSecretCredential } = require("@azure/identity");
+const { AIProjectClient } = require("@azure/ai-projects");
+
 const app = express();
 app.use(express.json());
 
@@ -20,69 +23,72 @@ function limparEndpoint(endpoint) {
   return (endpoint || "").replace(/\/$/, "");
 }
 
+let openaiClientPromise = null;
+
+async function obterOpenAIClientDoProjeto() {
+  if (openaiClientPromise) {
+    return openaiClientPromise;
+  }
+
+  const projectEndpoint = limparEndpoint(process.env.FOUNDRY_PROJECT_ENDPOINT);
+
+  if (!projectEndpoint) {
+    throw new Error("FOUNDRY_PROJECT_ENDPOINT não configurado.");
+  }
+
+  if (!process.env.AZURE_TENANT_ID) {
+    throw new Error("AZURE_TENANT_ID não configurado.");
+  }
+
+  if (!process.env.AZURE_CLIENT_ID) {
+    throw new Error("AZURE_CLIENT_ID não configurado.");
+  }
+
+  if (!process.env.AZURE_CLIENT_SECRET) {
+    throw new Error("AZURE_CLIENT_SECRET não configurado.");
+  }
+
+  const credential = new ClientSecretCredential(
+    process.env.AZURE_TENANT_ID,
+    process.env.AZURE_CLIENT_ID,
+    process.env.AZURE_CLIENT_SECRET
+  );
+
+  const project = new AIProjectClient(projectEndpoint, credential);
+
+  openaiClientPromise = project.getOpenAIClient();
+
+  return openaiClientPromise;
+}
+
 async function chamarAgenteFoundry(mensagemCliente) {
-  const endpoint = limparEndpoint(process.env.AZURE_OPENAI_ENDPOINT);
-  const apiKey = process.env.AZURE_OPENAI_API_KEY;
-  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4.1-mini";
   const agentName = process.env.FOUNDRY_AGENT_NAME || "bot-micks";
   const agentVersion = process.env.FOUNDRY_AGENT_VERSION || "2";
 
-  if (!endpoint) {
-    throw new Error("AZURE_OPENAI_ENDPOINT não configurado.");
-  }
+  const openai = await obterOpenAIClientDoProjeto();
 
-  if (!apiKey) {
-    throw new Error("AZURE_OPENAI_API_KEY não configurada.");
-  }
-
-  if (!deployment) {
-    throw new Error("AZURE_OPENAI_DEPLOYMENT não configurado.");
-  }
-
-  const url = `${endpoint}/openai/v1/responses`;
-
-  const body = {
-    model: deployment,
-    input: [
-      {
-        role: "user",
-        content: mensagemCliente
-      }
-    ],
-    agent_reference: {
-      name: agentName,
-      version: agentVersion,
-      type: "agent_reference"
-    }
+  const agentReference = {
+    name: agentName,
+    type: "agent_reference"
   };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "api-key": apiKey,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
+  if (agentVersion) {
+    agentReference.version = agentVersion;
+  }
+
+  const response = await openai.responses.create({
+    input: mensagemCliente,
+    agent_reference: agentReference
   });
 
-  const data = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    console.error("Erro bruto do Foundry:", JSON.stringify(data, null, 2));
-
-    throw new Error(
-      `Foundry retornou erro HTTP ${response.status}: ${JSON.stringify(data)}`
-    );
+  if (response.output_text) {
+    return response.output_text;
   }
 
-  if (data && data.output_text) {
-    return data.output_text;
-  }
-
-  if (data && Array.isArray(data.output)) {
+  if (Array.isArray(response.output)) {
     const textos = [];
 
-    for (const item of data.output) {
+    for (const item of response.output) {
       if (Array.isArray(item.content)) {
         for (const content of item.content) {
           if (content.text) {
@@ -101,7 +107,7 @@ async function chamarAgenteFoundry(mensagemCliente) {
     }
   }
 
-  console.log("Resposta completa do Foundry:", JSON.stringify(data, null, 2));
+  console.log("Resposta completa do Foundry:", JSON.stringify(response, null, 2));
 
   return "Não consegui gerar uma resposta agora. Vou direcionar para um atendente.";
 }
@@ -166,9 +172,11 @@ app.listen(port, () => {
   console.log("MicrosoftAppPassword configurado:", process.env.MicrosoftAppPassword ? "sim" : "não");
   console.log("MicrosoftAppTenantId configurado:", process.env.MicrosoftAppTenantId ? "sim" : "não");
 
-  console.log("AZURE_OPENAI_ENDPOINT configurado:", process.env.AZURE_OPENAI_ENDPOINT ? "sim" : "não");
-  console.log("AZURE_OPENAI_API_KEY configurado:", process.env.AZURE_OPENAI_API_KEY ? "sim" : "não");
-  console.log("AZURE_OPENAI_DEPLOYMENT:", process.env.AZURE_OPENAI_DEPLOYMENT || "não definido");
+  console.log("FOUNDRY_PROJECT_ENDPOINT configurado:", process.env.FOUNDRY_PROJECT_ENDPOINT ? "sim" : "não");
   console.log("FOUNDRY_AGENT_NAME:", process.env.FOUNDRY_AGENT_NAME || "não definido");
   console.log("FOUNDRY_AGENT_VERSION:", process.env.FOUNDRY_AGENT_VERSION || "não definido");
+
+  console.log("AZURE_TENANT_ID configurado:", process.env.AZURE_TENANT_ID ? "sim" : "não");
+  console.log("AZURE_CLIENT_ID configurado:", process.env.AZURE_CLIENT_ID ? "sim" : "não");
+  console.log("AZURE_CLIENT_SECRET configurado:", process.env.AZURE_CLIENT_SECRET ? "sim" : "não");
 });
