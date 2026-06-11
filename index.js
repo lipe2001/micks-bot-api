@@ -23,6 +23,7 @@ function limparEndpoint(endpoint) {
 async function chamarAgenteFoundry(mensagemCliente) {
   const endpoint = limparEndpoint(process.env.AZURE_OPENAI_ENDPOINT);
   const apiKey = process.env.AZURE_OPENAI_API_KEY;
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4.1-mini";
   const agentName = process.env.FOUNDRY_AGENT_NAME || "bot-micks";
   const agentVersion = process.env.FOUNDRY_AGENT_VERSION || "2";
 
@@ -34,9 +35,14 @@ async function chamarAgenteFoundry(mensagemCliente) {
     throw new Error("AZURE_OPENAI_API_KEY não configurada.");
   }
 
+  if (!deployment) {
+    throw new Error("AZURE_OPENAI_DEPLOYMENT não configurado.");
+  }
+
   const url = `${endpoint}/openai/v1/responses`;
 
   const body = {
+    model: deployment,
     input: [
       {
         role: "user",
@@ -63,16 +69,17 @@ async function chamarAgenteFoundry(mensagemCliente) {
 
   if (!response.ok) {
     console.error("Erro bruto do Foundry:", JSON.stringify(data, null, 2));
+
     throw new Error(
       `Foundry retornou erro HTTP ${response.status}: ${JSON.stringify(data)}`
     );
   }
 
-  if (data.output_text) {
+  if (data && data.output_text) {
     return data.output_text;
   }
 
-  if (Array.isArray(data.output)) {
+  if (data && Array.isArray(data.output)) {
     const textos = [];
 
     for (const item of data.output) {
@@ -161,6 +168,7 @@ app.listen(port, () => {
 
   console.log("AZURE_OPENAI_ENDPOINT configurado:", process.env.AZURE_OPENAI_ENDPOINT ? "sim" : "não");
   console.log("AZURE_OPENAI_API_KEY configurado:", process.env.AZURE_OPENAI_API_KEY ? "sim" : "não");
+  console.log("AZURE_OPENAI_DEPLOYMENT:", process.env.AZURE_OPENAI_DEPLOYMENT || "não definido");
   console.log("FOUNDRY_AGENT_NAME:", process.env.FOUNDRY_AGENT_NAME || "não definido");
   console.log("FOUNDRY_AGENT_VERSION:", process.env.FOUNDRY_AGENT_VERSION || "não definido");
 });
