@@ -1,0 +1,14 @@
+{
+  "name": "micks-bot-api",
+  "version": "1.0.0",
+  "description": "Middleware do Azure Bot Service para integração com Microsoft Foundry",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "botbuilder": "^4.23.3",
+    "express": "^4.18.3"
+  }
+}
