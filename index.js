@@ -4,9 +4,6 @@ const {
   ConfigurationBotFrameworkAuthentication
 } = require("botbuilder");
 
-const { ClientSecretCredential } = require("@azure/identity");
-const { AgentsClient } = require("@azure/ai-agents");
-
 const app = express();
 app.use(express.json());
 
@@ -19,82 +16,87 @@ const botFrameworkAuthentication = new ConfigurationBotFrameworkAuthentication({
 
 const adapter = new CloudAdapter(botFrameworkAuthentication);
 
-const credential = new ClientSecretCredential(
-  process.env.AZURE_TENANT_ID,
-  process.env.AZURE_CLIENT_ID,
-  process.env.AZURE_CLIENT_SECRET
-);
-
-const foundryClient = new AgentsClient(
-  process.env.FOUNDRY_PROJECT_ENDPOINT,
-  credential
-);
+function limparEndpoint(endpoint) {
+  return (endpoint || "").replace(/\/$/, "");
+}
 
 async function chamarAgenteFoundry(mensagemCliente) {
-  const agentId = process.env.FOUNDRY_AGENT_ID;
+  const endpoint = limparEndpoint(process.env.AZURE_OPENAI_ENDPOINT);
+  const apiKey = process.env.AZURE_OPENAI_API_KEY;
+  const agentName = process.env.FOUNDRY_AGENT_NAME || "bot-micks";
+  const agentVersion = process.env.FOUNDRY_AGENT_VERSION || "2";
 
-  if (!agentId) {
-    throw new Error("FOUNDRY_AGENT_ID não configurado.");
+  if (!endpoint) {
+    throw new Error("AZURE_OPENAI_ENDPOINT não configurado.");
   }
 
-  if (!process.env.FOUNDRY_PROJECT_ENDPOINT) {
-    throw new Error("FOUNDRY_PROJECT_ENDPOINT não configurado.");
+  if (!apiKey) {
+    throw new Error("AZURE_OPENAI_API_KEY não configurada.");
   }
 
-  const thread = await foundryClient.threads.create();
+  const url = `${endpoint}/openai/v1/responses`;
 
-  await foundryClient.messages.create(thread.id, "user", mensagemCliente);
+  const body = {
+    input: [
+      {
+        role: "user",
+        content: mensagemCliente
+      }
+    ],
+    agent_reference: {
+      name: agentName,
+      version: agentVersion,
+      type: "agent_reference"
+    }
+  };
 
-  let run = await foundryClient.runs.create(thread.id, agentId);
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "api-key": apiKey,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
 
-  const inicio = Date.now();
-  const timeoutMs = 30000;
+  const data = await response.json().catch(() => null);
 
-  while (
-    run.status === "queued" ||
-    run.status === "in_progress" ||
-    run.status === "requires_action"
-  ) {
-    if (Date.now() - inicio > timeoutMs) {
-      throw new Error("Timeout aguardando resposta do Foundry Agent.");
+  if (!response.ok) {
+    console.error("Erro bruto do Foundry:", JSON.stringify(data, null, 2));
+    throw new Error(
+      `Foundry retornou erro HTTP ${response.status}: ${JSON.stringify(data)}`
+    );
+  }
+
+  if (data.output_text) {
+    return data.output_text;
+  }
+
+  if (Array.isArray(data.output)) {
+    const textos = [];
+
+    for (const item of data.output) {
+      if (Array.isArray(item.content)) {
+        for (const content of item.content) {
+          if (content.text) {
+            textos.push(content.text);
+          }
+
+          if (content.type === "output_text" && content.text) {
+            textos.push(content.text);
+          }
+        }
+      }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    run = await foundryClient.runs.get(thread.id, run.id);
+    if (textos.length > 0) {
+      return textos.join("\n");
+    }
   }
 
-  if (run.status !== "completed") {
-    console.error("Run não completou:", run);
-    throw new Error(`Run do Foundry terminou com status: ${run.status}`);
-  }
+  console.log("Resposta completa do Foundry:", JSON.stringify(data, null, 2));
 
-  const mensagens = await foundryClient.messages.list(thread.id);
-
-  const listaMensagens = [];
-
-  for await (const item of mensagens) {
-    listaMensagens.push(item);
-  }
-
-  const respostaAssistente = listaMensagens.find(
-    (msg) => msg.role === "assistant"
-  );
-
-  if (!respostaAssistente || !respostaAssistente.content) {
-    throw new Error("Nenhuma resposta do assistente foi encontrada.");
-  }
-
-  const parteTexto = respostaAssistente.content.find(
-    (contentItem) => contentItem.type === "text"
-  );
-
-  const textoResposta =
-    parteTexto?.text?.value ||
-    parteTexto?.text ||
-    "Não consegui gerar uma resposta agora. Vou direcionar para um atendente.";
-
-  return textoResposta;
+  return "Não consegui gerar uma resposta agora. Vou direcionar para um atendente.";
 }
 
 adapter.onTurnError = async (context, error) => {
@@ -157,9 +159,8 @@ app.listen(port, () => {
   console.log("MicrosoftAppPassword configurado:", process.env.MicrosoftAppPassword ? "sim" : "não");
   console.log("MicrosoftAppTenantId configurado:", process.env.MicrosoftAppTenantId ? "sim" : "não");
 
-  console.log("FOUNDRY_PROJECT_ENDPOINT configurado:", process.env.FOUNDRY_PROJECT_ENDPOINT ? "sim" : "não");
-  console.log("FOUNDRY_AGENT_ID configurado:", process.env.FOUNDRY_AGENT_ID ? "sim" : "não");
-  console.log("AZURE_CLIENT_ID configurado:", process.env.AZURE_CLIENT_ID ? "sim" : "não");
-  console.log("AZURE_CLIENT_SECRET configurado:", process.env.AZURE_CLIENT_SECRET ? "sim" : "não");
-  console.log("AZURE_TENANT_ID configurado:", process.env.AZURE_TENANT_ID ? "sim" : "não");
+  console.log("AZURE_OPENAI_ENDPOINT configurado:", process.env.AZURE_OPENAI_ENDPOINT ? "sim" : "não");
+  console.log("AZURE_OPENAI_API_KEY configurado:", process.env.AZURE_OPENAI_API_KEY ? "sim" : "não");
+  console.log("FOUNDRY_AGENT_NAME:", process.env.FOUNDRY_AGENT_NAME || "não definido");
+  console.log("FOUNDRY_AGENT_VERSION:", process.env.FOUNDRY_AGENT_VERSION || "não definido");
 });

@@ -11,8 +11,6 @@
     "node": "20.x"
   },
   "dependencies": {
-    "@azure/ai-agents": "^1.0.0",
-    "@azure/identity": "^4.10.0",
     "botbuilder": "^4.23.3",
     "express": "^4.18.3"
   }
