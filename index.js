@@ -24,10 +24,96 @@ const botFrameworkAuthentication = new ConfigurationBotFrameworkAuthentication({
 const adapter = new CloudAdapter(botFrameworkAuthentication);
 
 /**
- * Remove barra final do endpoint, se existir.
+ * Memória local por conversa.
+ *
+ * Estrutura:
+ * conversationId => {
+ *   mensagens: [
+ *     { role: "user", content: "..." },
+ *     { role: "assistant", content: "..." }
+ *   ],
+ *   atualizadoEm: timestamp
+ * }
  */
+const historicoConversas = new Map();
+
+/**
+ * Quantidade máxima de mensagens salvas por conversa.
+ * 12 mensagens = aproximadamente 6 interações cliente/bot.
+ */
+const MAX_MENSAGENS_HISTORICO = Number(process.env.MAX_MENSAGENS_HISTORICO || 12);
+
+/**
+ * Tempo para limpar conversas antigas da memória.
+ * Padrão: 120 minutos.
+ */
+const TEMPO_EXPIRACAO_MINUTOS = Number(process.env.TEMPO_EXPIRACAO_MINUTOS || 120);
+const TEMPO_EXPIRACAO_MS = TEMPO_EXPIRACAO_MINUTOS * 60 * 1000;
+
 function limparEndpoint(endpoint) {
   return (endpoint || "").replace(/\/$/, "");
+}
+
+function limparHistoricosExpirados() {
+  const agora = Date.now();
+
+  for (const [conversationId, dados] of historicoConversas.entries()) {
+    if (agora - dados.atualizadoEm > TEMPO_EXPIRACAO_MS) {
+      historicoConversas.delete(conversationId);
+      console.log(`Histórico expirado removido: ${conversationId}`);
+    }
+  }
+}
+
+function obterHistorico(conversationId) {
+  limparHistoricosExpirados();
+
+  if (!historicoConversas.has(conversationId)) {
+    historicoConversas.set(conversationId, {
+      mensagens: [],
+      atualizadoEm: Date.now()
+    });
+  }
+
+  return historicoConversas.get(conversationId);
+}
+
+function salvarInteracaoNoHistorico(conversationId, mensagemCliente, respostaBot) {
+  const historico = obterHistorico(conversationId);
+
+  historico.mensagens.push({
+    role: "user",
+    content: mensagemCliente
+  });
+
+  historico.mensagens.push({
+    role: "assistant",
+    content: respostaBot
+  });
+
+  if (historico.mensagens.length > MAX_MENSAGENS_HISTORICO) {
+    historico.mensagens = historico.mensagens.slice(
+      historico.mensagens.length - MAX_MENSAGENS_HISTORICO
+    );
+  }
+
+  historico.atualizadoEm = Date.now();
+
+  historicoConversas.set(conversationId, historico);
+}
+
+function montarInputComHistorico(conversationId, mensagemCliente) {
+  const historico = obterHistorico(conversationId);
+
+  const mensagens = [
+    ...historico.mensagens,
+    {
+      role: "user",
+      content: mensagemCliente
+    }
+  ];
+
+  return mensagens;
 }
 
 let openaiClientPromise = null;
@@ -78,11 +164,13 @@ async function obterOpenAIClientDoProjeto() {
 
 /**
  * Chama o agente do Microsoft Foundry usando agent_reference.
+ * Agora envia histórico da conversa junto com a nova mensagem.
+ *
  * Usa:
  * - FOUNDRY_AGENT_NAME
  * - FOUNDRY_AGENT_VERSION
  */
-async function chamarAgenteFoundry(mensagemCliente) {
+async function chamarAgenteFoundry(conversationId, mensagemCliente) {
   const agentName = process.env.FOUNDRY_AGENT_NAME || "bot-micks";
   const agentVersion = process.env.FOUNDRY_AGENT_VERSION || "2";
 
@@ -97,9 +185,15 @@ async function chamarAgenteFoundry(mensagemCliente) {
     agentReference.version = agentVersion;
   }
 
+  const inputComHistorico = montarInputComHistorico(conversationId, mensagemCliente);
+
+  console.log(
+    `Enviando para Foundry | conversationId=${conversationId} | mensagens_no_contexto=${inputComHistorico.length}`
+  );
+
   const response = await openai.responses.create(
     {
-      input: mensagemCliente
+      input: inputComHistorico
     },
     {
       body: {
@@ -108,11 +202,13 @@ async function chamarAgenteFoundry(mensagemCliente) {
     }
   );
 
+  let respostaFinal = null;
+
   if (response.output_text) {
-    return response.output_text;
+    respostaFinal = response.output_text;
   }
 
-  if (Array.isArray(response.output)) {
+  if (!respostaFinal && Array.isArray(response.output)) {
     const textos = [];
 
     for (const item of response.output) {
@@ -130,13 +226,19 @@ async function chamarAgenteFoundry(mensagemCliente) {
     }
 
     if (textos.length > 0) {
-      return textos.join("\n");
+      respostaFinal = textos.join("\n");
     }
   }
 
-  console.log("Resposta completa do Foundry:", JSON.stringify(response, null, 2));
+  if (!respostaFinal) {
+    console.log("Resposta completa do Foundry:", JSON.stringify(response, null, 2));
+    respostaFinal =
+      "Não consegui gerar uma resposta agora. Vou direcionar para um atendente.";
+  }
 
-  return "Não consegui gerar uma resposta agora. Vou direcionar para um atendente.";
+  salvarInteracaoNoHistorico(conversationId, mensagemCliente, respostaFinal);
+
+  return respostaFinal;
 }
 
 /**
@@ -162,6 +264,20 @@ app.get("/", (req, res) => {
 });
 
 /**
+ * Endpoint para ver status simples da memória.
+ * Não expõe conteúdo das conversas, apenas quantidade.
+ */
+app.get("/debug/memoria", (req, res) => {
+  limparHistoricosExpirados();
+
+  res.status(200).json({
+    conversas_em_memoria: historicoConversas.size,
+    max_mensagens_por_conversa: MAX_MENSAGENS_HISTORICO,
+    tempo_expiracao_minutos: TEMPO_EXPIRACAO_MINUTOS
+  });
+});
+
+/**
  * Endpoint principal usado pelo Azure Bot Service.
  */
 app.post("/api/messages", async (req, res) => {
@@ -169,11 +285,19 @@ app.post("/api/messages", async (req, res) => {
     await adapter.process(req, res, async (context) => {
       if (context.activity.type === "message") {
         const textoCliente = context.activity.text || "";
+        const conversationId =
+          context.activity.conversation?.id ||
+          context.activity.from?.id ||
+          "conversa-sem-id";
 
         console.log("Mensagem recebida:", textoCliente);
+        console.log("Conversation ID:", conversationId);
 
         try {
-          const respostaFoundry = await chamarAgenteFoundry(textoCliente);
+          const respostaFoundry = await chamarAgenteFoundry(
+            conversationId,
+            textoCliente
+          );
 
           console.log("Resposta Foundry:", respostaFoundry);
 
@@ -215,4 +339,7 @@ app.listen(port, () => {
   console.log("AZURE_TENANT_ID configurado:", process.env.AZURE_TENANT_ID ? "sim" : "não");
   console.log("AZURE_CLIENT_ID configurado:", process.env.AZURE_CLIENT_ID ? "sim" : "não");
   console.log("AZURE_CLIENT_SECRET configurado:", process.env.AZURE_CLIENT_SECRET ? "sim" : "não");
+
+  console.log("MAX_MENSAGENS_HISTORICO:", MAX_MENSAGENS_HISTORICO);
+  console.log("TEMPO_EXPIRACAO_MINUTOS:", TEMPO_EXPIRACAO_MINUTOS);
 });
